@@ -30,6 +30,9 @@ import {
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
+import { decodeTime } from "ulid";
+
+const lastMessageTimes = new Map<string, number>();
 
 interface Props {
   /**
@@ -51,6 +54,54 @@ export function MessageComposition(props: Props) {
   const { t } = useLingui();
   const client = useClient();
   const { openModal } = useModals();
+
+  const [now, setNow] = createSignal(Date.now());
+
+  createEffect(() => {
+    if (props.channel.slowmode) {
+      setNow(Date.now());
+      const timer = setInterval(() => setNow(Date.now()), 1000);
+      onCleanup(() => clearInterval(timer));
+    }
+  });
+
+  const isSlowmodeExempt = createMemo(() => {
+    return (
+      props.channel.havePermission("BypassSlowmode")
+    );
+  });
+
+  const cooldownRemaining = createMemo(() => {
+    const slowmode = props.channel.slowmode || 0;
+    if (!slowmode || isSlowmodeExempt()) return 0;
+
+    let lastSent = lastMessageTimes.get(props.channel.id);
+    if (lastSent === undefined) {
+      let latestByUs = 0;
+      const myId = client()?.user?.id;
+      if (myId) {
+        for (const msg of client()!.messages.values()) {
+          if (msg.channelId === props.channel.id && msg.authorId === myId) {
+            const time = decodeTime(msg.id);
+            if (time > latestByUs) latestByUs = time;
+          }
+        }
+      }
+      lastMessageTimes.set(props.channel.id, latestByUs);
+      lastSent = latestByUs;
+    }
+
+    const remaining = Math.ceil(slowmode - (now() - lastSent) / 1000);
+    return remaining > 0 ? remaining : 0;
+  });
+
+  const slowmodeText = createMemo(() => {
+    const s = cooldownRemaining() || props.channel.slowmode || 0;
+    if (!s) return "";
+    if (s >= 3600) return (s / 3600).toFixed(1).replace(/\.0$/, "") + "h";
+    if (s >= 60) return (s / 60).toFixed(1).replace(/\.0$/, "") + "m";
+    return s + "s";
+  });
 
   createKeybind(KeybindAction.CHAT_JUMP_END, () =>
     setNodeReplacement(["_focus"]),
@@ -162,6 +213,11 @@ export function MessageComposition(props: Props) {
   async function sendMessage(useContent?: unknown) {
     stopTyping();
     props.onMessageSend?.();
+
+    if (props.channel.slowmode) {
+      lastMessageTimes.set(props.channel.id, Date.now());
+      setNow(Date.now());
+    }
 
     if (typeof useContent === "string") {
       const currentDraft = draft();
@@ -319,6 +375,23 @@ export function MessageComposition(props: Props) {
           );
         }}
       </For>
+      <Show when={props.channel.slowmode}>
+        <div style={{ display: "flex", "justify-content": "flex-end", padding: "0 12px 6px 0" }}>
+          <div title={t`Channel slowmode is active`} style={{ display: "flex", "align-items": "center", gap: "4px", color: cooldownRemaining() > 0 ? "var(--colors-error)" : "var(--colors-text-muted)" }}>
+            <Symbol style={{ "font-size": "1rem" }}>schedule</Symbol>
+            <span style={{ "font-size": "0.75rem", "font-weight": "600" }}>
+              <Switch fallback={t`Slowmode is active`}>
+                <Match when={isSlowmodeExempt()}>
+                  {t`Slowmode (not affected)`}
+                </Match>
+                <Match when={cooldownRemaining() > 0}>
+                  {t`Slowmode (${slowmodeText()} left)`}
+                </Match>
+              </Switch>
+            </span>
+          </div>
+        </div>
+      </Show>
       <MessageBox
         initialValue={initialValue()}
         nodeReplacement={nodeReplacement()}
