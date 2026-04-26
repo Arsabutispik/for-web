@@ -7,7 +7,7 @@ import type { API } from "stoat.js";
 import { useClient } from "@revolt/client";
 import { CONFIGURATION } from "@revolt/common";
 import { useModals } from "@revolt/modal";
-import { Button, CircularProgress, Column, Form2, Row, Text } from "@revolt/ui";
+import { Button, CircularProgress, Column, Form2, Row, Text, FloatingSelect, MenuItem } from "@revolt/ui";
 
 import { ChannelSettingsProps } from "../ChannelSettings";
 
@@ -27,6 +27,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     icon: createFormControl<string | File[] | null>(
       props.channel.animatedIconURL,
     ),
+    slowmode: createFormControl(String(props.channel.slowmode ?? 0)),
   });
   /* eslint-enable solid/reactivity */
 
@@ -34,6 +35,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
     editGroup.controls.name.setValue(props.channel.name);
     editGroup.controls.description.setValue(props.channel.description || "");
     editGroup.controls.icon.setValue(props.channel.animatedIconURL ?? null);
+    editGroup.controls.slowmode.setValue(String(props.channel.slowmode ?? 0));
   }
 
   async function onSubmit() {
@@ -78,6 +80,10 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
       }
     }
 
+    if(editGroup.controls.slowmode.isDirty) {
+      changes.slowmode = Number(editGroup.controls.slowmode.value);
+    }
+
     await props.channel.edit(changes);
   }
 
@@ -109,6 +115,57 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
             label={t`Channel Description`}
             placeholder={t`This channel is about...`}
           />
+          <FloatingSelect
+            label={t`Channel Slowmode`}
+            value={editGroup.controls.slowmode.value}
+            onChange={(
+              e: Event & { currentTarget: HTMLElement; target: Element },
+            ) => {
+              const next = e.currentTarget.getAttribute("value") || "0";
+              const control = editGroup.controls.slowmode;
+
+              // Only mark dirty when value actually changed from initial/current baseline
+              if (control.value !== next) {
+                control.setValue(next);
+                control.markDirty(true);
+              }
+            }
+            }
+          >
+            <MenuItem value="0">
+              <Trans>Slowmode off</Trans>
+            </MenuItem>
+            <MenuItem value="5">
+              <Trans>5 seconds</Trans>
+            </MenuItem>
+            <MenuItem value="10">
+              <Trans>10 seconds</Trans>
+            </MenuItem>
+            <MenuItem value="30">
+              <Trans>30 seconds</Trans>
+            </MenuItem>
+            <MenuItem value="60">
+              <Trans>1 minute</Trans>
+            </MenuItem>
+            <MenuItem value="300">
+              <Trans>5 minutes</Trans>
+            </MenuItem>
+            <MenuItem value="600">
+              <Trans>10 minutes</Trans>
+            </MenuItem>
+            <MenuItem value="1800">
+              <Trans>30 minutes</Trans>
+            </MenuItem>
+            <MenuItem value="3600">
+              <Trans>1 hour</Trans>
+            </MenuItem>
+            <MenuItem value="7200">
+              <Trans>2 hours</Trans>
+            </MenuItem>
+            <MenuItem value="21600">
+              <Trans>6 hours</Trans>
+            </MenuItem>
+          </FloatingSelect>
           <Row>
             <Form2.Reset group={editGroup} onReset={onReset} />
             <Form2.Submit group={editGroup} requireDirty>
