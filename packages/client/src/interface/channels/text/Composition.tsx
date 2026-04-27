@@ -26,13 +26,41 @@ import {
   IconButton,
   MessageBox,
   MessageReplyPreview,
+  Tooltip,
   humanFileSize,
 } from "@revolt/ui";
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
-import { decodeTime } from "ulid";
+
+function loadAppliedSlowmodes() {
+  const map = new Map<string, { value: number; expiresAt: number }>();
+  try {
+    const stored = JSON.parse(localStorage.getItem("stoat_applied_slowmodes") || "[]");
+    const now = Date.now();
+    for (const [id, data] of stored) {
+      if (typeof data === "number") {
+        map.set(id, { value: data, expiresAt: now + (data * 1000) });
+      } else if (data && typeof data === "object" && data.expiresAt > now) {
+        map.set(id, data);
+      }
+    }
+  } catch {}
+  return map;
+}
 
 const lastMessageTimes = new Map<string, number>();
+const appliedSlowmodes = loadAppliedSlowmodes();
+
+function saveAppliedSlowmodes() {
+  try {
+    const now = Date.now();
+    const validEntries = [...appliedSlowmodes.entries()].filter(([_, data]) => data.expiresAt > now);
+    localStorage.setItem("stoat_applied_slowmodes", JSON.stringify(validEntries));
+  } catch {}
+}
+
+// Clean up expired items from local storage on client load
+saveAppliedSlowmodes();
 
 interface Props {
   /**
@@ -76,31 +104,67 @@ export function MessageComposition(props: Props) {
     if (!slowmode || isSlowmodeExempt()) return 0;
 
     let lastSent = lastMessageTimes.get(props.channel.id);
-    if (lastSent === undefined) {
+    if (!lastSent) {
       let latestByUs = 0;
       const myId = client()?.user?.id;
       if (myId) {
         for (const msg of client()!.messages.values()) {
           if (msg.channelId === props.channel.id && msg.authorId === myId) {
-            const time = decodeTime(msg.id);
+            const time = msg.createdAt.getTime();
             if (time > latestByUs) latestByUs = time;
           }
         }
       }
-      lastMessageTimes.set(props.channel.id, latestByUs);
+      if (latestByUs > 0) {
+        lastMessageTimes.set(props.channel.id, latestByUs);
+      }
       lastSent = latestByUs;
     }
 
-    const remaining = Math.ceil(slowmode - (now() - lastSent) / 1000);
+    const appliedSlowmodeData = appliedSlowmodes.get(props.channel.id);
+    if (appliedSlowmodeData && appliedSlowmodeData.expiresAt <= now()) {
+      appliedSlowmodes.delete(props.channel.id);
+      saveAppliedSlowmodes();
+    }
+
+    const appliedSlowmode = appliedSlowmodes.has(props.channel.id)
+      ? appliedSlowmodes.get(props.channel.id)!.value
+      : slowmode;
+
+    const activeSlowmode = Math.min(slowmode, appliedSlowmode);
+    const remaining = Math.ceil(activeSlowmode - (now() - lastSent) / 1000);
     return remaining > 0 ? remaining : 0;
   });
 
   const slowmodeText = createMemo(() => {
-    const s = cooldownRemaining() || props.channel.slowmode || 0;
+    const s = cooldownRemaining();
     if (!s) return "";
-    if (s >= 3600) return (s / 3600).toFixed(1).replace(/\.0$/, "") + "h";
-    if (s >= 60) return (s / 60).toFixed(1).replace(/\.0$/, "") + "m";
-    return s + "s";
+    
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+    }
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  });
+
+  const slowmodeWaitTime = createMemo(() => {
+    const s = props.channel.slowmode;
+    if (!s) return "";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    
+    if (h > 0 && m === 0 && sec === 0) return h === 1 ? t`1 hour` : t`${h} hours`;
+    if (m > 0 && sec === 0 && h === 0) return m === 1 ? t`1 minute` : t`${m} minutes`;
+    
+    const parts = [];
+    if (h > 0) parts.push(h === 1 ? t`1 hour` : t`${h} hours`);
+    if (m > 0) parts.push(m === 1 ? t`1 minute` : t`${m} minutes`);
+    if (sec > 0) parts.push(sec === 1 ? t`1 second` : t`${sec} seconds`);
+    return parts.join(" ");
   });
 
   createKeybind(KeybindAction.CHAT_JUMP_END, () =>
@@ -214,8 +278,17 @@ export function MessageComposition(props: Props) {
     stopTyping();
     props.onMessageSend?.();
 
+    const currentSlowmode = props.channel.slowmode || 0;
+    lastMessageTimes.set(props.channel.id, Date.now());
+
+    const expirationDuration = currentSlowmode * 1000;
+    appliedSlowmodes.set(props.channel.id, {
+      value: currentSlowmode,
+      expiresAt: Date.now() + expirationDuration,
+    });
+    saveAppliedSlowmodes();
+
     if (props.channel.slowmode) {
-      lastMessageTimes.set(props.channel.id, Date.now());
       setNow(Date.now());
     }
 
@@ -377,19 +450,21 @@ export function MessageComposition(props: Props) {
       </For>
       <Show when={props.channel.slowmode}>
         <div style={{ display: "flex", "justify-content": "flex-end", padding: "0 12px 6px 0" }}>
-          <div title={t`Channel slowmode is active`} style={{ display: "flex", "align-items": "center", gap: "4px", color: cooldownRemaining() > 0 ? "var(--colors-error)" : "var(--colors-text-muted)" }}>
-            <Symbol style={{ "font-size": "1rem" }}>schedule</Symbol>
-            <span style={{ "font-size": "0.75rem", "font-weight": "600" }}>
-              <Switch fallback={t`Slowmode is active`}>
-                <Match when={isSlowmodeExempt()}>
-                  {t`Slowmode (not affected)`}
-                </Match>
-                <Match when={cooldownRemaining() > 0}>
-                  {t`Slowmode (${slowmodeText()} left)`}
-                </Match>
-              </Switch>
-            </span>
-          </div>
+          <Tooltip content={t`Members can send one message every ${slowmodeWaitTime()}.`} placement="top">
+            <div style={{ display: "flex", "align-items": "center", gap: "4px" }}>
+              <Symbol style={{ "font-size": "1rem" }}>schedule</Symbol>
+              <span style={{ "font-size": "0.75rem", "font-weight": "600" }}>
+                <Switch fallback={t`Slowmode is enabled.`}>
+                  <Match when={isSlowmodeExempt()}>
+                    {t`Slowmode Immune`}
+                  </Match>
+                  <Match when={cooldownRemaining() > 0}>
+                    {slowmodeText()}
+                  </Match>
+                </Switch>
+              </span>
+            </div>
+          </Tooltip>
         </div>
       </Show>
       <MessageBox
