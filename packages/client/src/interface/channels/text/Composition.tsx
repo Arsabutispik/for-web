@@ -32,35 +32,36 @@ import {
 import { Symbol } from "@revolt/ui/components/utils/Symbol";
 import { useSearchSpace } from "@revolt/ui/components/utils/autoComplete";
 
-function loadAppliedSlowmodes() {
-  const map = new Map<string, { value: number; expiresAt: number }>();
-  try {
-    const stored = JSON.parse(localStorage.getItem("stoat_applied_slowmodes") || "[]");
-    const now = Date.now();
-    for (const [id, data] of stored) {
-      if (typeof data === "number") {
-        map.set(id, { value: data, expiresAt: now + (data * 1000) });
-      } else if (data && typeof data === "object" && data.expiresAt > now) {
-        map.set(id, data);
-      }
-    }
-  } catch {}
-  return map;
+interface AppliedSlowmode {
+  sentAt: number;
+  value: number;
 }
 
-const lastMessageTimes = new Map<string, number>();
+function loadAppliedSlowmodes(): Map<string, AppliedSlowmode> {
+  try {
+    const stored = JSON.parse(localStorage.getItem("stoatSlowmodes") ?? "[]");
+    const now = Date.now();
+    return new Map(
+      (stored as [string, AppliedSlowmode][]).filter(
+        ([, entry]) => entry.sentAt + entry.value * 1000 > now
+      )
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function saveAppliedSlowmodes(map: Map<string, AppliedSlowmode>) {
+  try {
+    const now = Date.now();
+    const valid = [...map.entries()].filter(
+      ([, entry]) => entry.sentAt + entry.value * 1000 > now
+    );
+    localStorage.setItem("stoatSlowmodes", JSON.stringify(valid));
+  } catch {}
+}
+
 const appliedSlowmodes = loadAppliedSlowmodes();
-
-function saveAppliedSlowmodes() {
-  try {
-    const now = Date.now();
-    const validEntries = [...appliedSlowmodes.entries()].filter(([_, data]) => data.expiresAt > now);
-    localStorage.setItem("stoat_applied_slowmodes", JSON.stringify(validEntries));
-  } catch {}
-}
-
-// Clean up expired items from local storage on client load
-saveAppliedSlowmodes();
 
 interface Props {
   /**
@@ -86,8 +87,7 @@ export function MessageComposition(props: Props) {
   const [now, setNow] = createSignal(Date.now());
 
   createEffect(() => {
-    if (props.channel.slowmode) {
-      setNow(Date.now());
+    if (cooldownRemaining() > 0) {
       const timer = setInterval(() => setNow(Date.now()), 1000);
       onCleanup(() => clearInterval(timer));
     }
@@ -100,39 +100,13 @@ export function MessageComposition(props: Props) {
   });
 
   const cooldownRemaining = createMemo(() => {
-    const slowmode = props.channel.slowmode || 0;
-    if (!slowmode || isSlowmodeExempt()) return 0;
+    if (!props.channel.slowmode || isSlowmodeExempt()) return 0;
+    now();
 
-    let lastSent = lastMessageTimes.get(props.channel.id);
-    if (!lastSent) {
-      let latestByUs = 0;
-      const myId = client()?.user?.id;
-      if (myId) {
-        for (const msg of client()!.messages.values()) {
-          if (msg.channelId === props.channel.id && msg.authorId === myId) {
-            const time = msg.createdAt.getTime();
-            if (time > latestByUs) latestByUs = time;
-          }
-        }
-      }
-      if (latestByUs > 0) {
-        lastMessageTimes.set(props.channel.id, latestByUs);
-      }
-      lastSent = latestByUs;
-    }
+    const entry = appliedSlowmodes.get(props.channel.id);
+    if (!entry) return 0;
 
-    const appliedSlowmodeData = appliedSlowmodes.get(props.channel.id);
-    if (appliedSlowmodeData && appliedSlowmodeData.expiresAt <= now()) {
-      appliedSlowmodes.delete(props.channel.id);
-      saveAppliedSlowmodes();
-    }
-
-    const appliedSlowmode = appliedSlowmodes.has(props.channel.id)
-      ? appliedSlowmodes.get(props.channel.id)!.value
-      : slowmode;
-
-    const activeSlowmode = Math.min(slowmode, appliedSlowmode);
-    const remaining = Math.ceil(activeSlowmode - (now() - lastSent) / 1000);
+    const remaining = Math.ceil(entry.value - (Date.now() - entry.sentAt) / 1000);
     return remaining > 0 ? remaining : 0;
   });
 
@@ -298,17 +272,12 @@ export function MessageComposition(props: Props) {
     stopTyping();
     props.onMessageSend?.();
 
-    const currentSlowmode = props.channel.slowmode || 0;
-    lastMessageTimes.set(props.channel.id, Date.now());
-
-    const expirationDuration = currentSlowmode * 1000;
-    appliedSlowmodes.set(props.channel.id, {
-      value: currentSlowmode,
-      expiresAt: Date.now() + expirationDuration,
-    });
-    saveAppliedSlowmodes();
-
     if (props.channel.slowmode) {
+      appliedSlowmodes.set(props.channel.id, {
+        sentAt: Date.now(),
+        value: props.channel.slowmode,
+      });
+      saveAppliedSlowmodes(appliedSlowmodes);
       setNow(Date.now());
     }
 
