@@ -115,6 +115,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
             label={t`Channel Description`}
             placeholder={t`This channel is about...`}
           />
+          <Show when={props.channel.type === "TextChannel"}>
           <FloatingSelect
             label={t`Channel Slowmode`}
             value={editGroup.controls.slowmode.value}
@@ -166,6 +167,7 @@ export default function ChannelOverview(props: ChannelSettingsProps) {
               <Trans>6 hours</Trans>
             </MenuItem>
           </FloatingSelect>
+          </Show>
           <Row>
             <Form2.Reset group={editGroup} onReset={onReset} />
             <Form2.Submit group={editGroup} requireDirty>

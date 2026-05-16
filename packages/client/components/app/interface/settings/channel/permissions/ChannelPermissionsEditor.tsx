@@ -332,7 +332,7 @@ export function ChannelPermissionsEditor(props: Props) {
       value: 2n ** 39n,
       title: t`Bypass Slowmode`,
       description: {
-        Any: t`Bypasses slowmode in channels`,
+        Server: t`Bypasses slowmode in channels`,
       }
     },
     {
